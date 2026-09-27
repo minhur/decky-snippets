@@ -26,7 +26,7 @@ Snippets are stored as plain JSON in Decky's settings directory for this plugin 
 
 ## Status
 
-Built from source and released; not yet verified on a Steam Deck. If a tap does nothing in a particular game, open an issue naming the game.
+v1.2.0 verified working on a Steam Deck OLED (2026-09-27): install from the release URL, tap an entry, text lands in the focused field. If a tap does nothing in a particular game, open an issue naming the game.
 
 ## Build
 
