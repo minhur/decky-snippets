@@ -11,7 +11,9 @@ import {
   Menu,
   MenuItem,
   ConfirmModal,
-  showModal
+  showModal,
+  Router,
+  sleep
 } from "@decky/ui";
 import {
   callable,
@@ -19,101 +21,142 @@ import {
   toaster
 } from "@decky/api";
 import { useState, useEffect } from "react";
-import { FaClipboard, FaCheck, FaPlus, FaPencilAlt, FaUndo } from "react-icons/fa";
+import { FaKeyboard, FaClipboard, FaCheck, FaPlus, FaPencilAlt } from "react-icons/fa";
+
+// Steam's client API is a global inside the Steam UI. Typed loosely so the
+// build does not depend on a specific @decky/ui typing of it.
+declare const SteamClient: any;
 
 // Backend API calls
-const getEntries = callable<[], ClipboardEntry[]>("get_entries");
-const addEntry = callable<[name: string, command: string], ClipboardEntry>("add_entry");
-const updateEntry = callable<[entryId: string, name: string, command: string], ClipboardEntry | null>("update_entry");
+const getEntries = callable<[], Snippet[]>("get_entries");
+const addEntry = callable<[name: string, text: string], Snippet>("add_entry");
+const updateEntry = callable<[entryId: string, name: string, text: string], Snippet | null>("update_entry");
 const deleteEntry = callable<[entryId: string], boolean>("delete_entry");
-const resetToDefaults = callable<[], ClipboardEntry[]>("reset_to_defaults");
+const getSettings = callable<[], Settings>("get_settings");
+const setSetting = callable<[key: string, value: unknown], Settings>("set_setting");
+
+// Delays copied from DeckPass, which types credentials into games the same way.
+const CLOSE_MENU_DELAY_MS = 500;
+const PER_CHAR_DELAY_MS = 5;
+
+interface Snippet {
+  id: string;
+  name: string;
+  text: string;
+}
+
+interface Settings {
+  append_command: boolean;
+}
 
 // Helper to truncate long names
-const truncateName = (name: string, maxLength: number = 18): string => {
+const truncateName = (name: string, maxLength: number = 16): string => {
   if (name.length <= maxLength) return name;
   return name.slice(0, maxLength - 1) + "…";
 };
 
-interface ClipboardEntry {
-  id: string;
-  name: string;
-  command: string;
-}
+const resolveText = (entry: Snippet, appendCommand: boolean): string =>
+  appendCommand ? `${entry.text} %command%` : entry.text;
 
-interface ClipboardButtonProps {
-  entry: ClipboardEntry;
+// Close the Quick Access Menu and type the text into whatever has focus.
+// Same mechanism as DeckPass: SteamClient.Input.ControllerKeyboardSendText,
+// one character at a time, so it works inside games and not only in Steam UI.
+const typeText = async (text: string): Promise<void> => {
+  const sendText = SteamClient?.Input?.ControllerKeyboardSendText;
+  if (typeof sendText !== "function") {
+    throw new Error("SteamClient.Input.ControllerKeyboardSendText is not available");
+  }
+  Router.CloseSideMenus();
+  await sleep(CLOSE_MENU_DELAY_MS);
+  for (const char of text) {
+    SteamClient.Input.ControllerKeyboardSendText(char);
+    await sleep(PER_CHAR_DELAY_MS);
+  }
+};
+
+// Put the text on the Steam client clipboard, for the on-screen keyboard's
+// paste key (Steam UI fields such as launch options).
+const copyText = async (text: string): Promise<boolean> => {
+  const tempInput = document.createElement("input");
+  tempInput.value = text;
+  tempInput.style.position = "absolute";
+  tempInput.style.left = "-9999px";
+  document.body.appendChild(tempInput);
+  tempInput.focus();
+  tempInput.select();
+
+  let copySuccess = false;
+  try {
+    if (document.execCommand("copy")) {
+      copySuccess = true;
+    }
+  } catch (e) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copySuccess = true;
+    } catch (clipboardError) {
+      console.error("Both copy methods failed:", e, clipboardError);
+    }
+  }
+  document.body.removeChild(tempInput);
+  return copySuccess;
+};
+
+interface SnippetRowProps {
+  entry: Snippet;
   appendCommand: boolean;
-  onEdit: (entry: ClipboardEntry) => void;
-  onDelete: (entry: ClipboardEntry) => void;
+  onEdit: (entry: Snippet) => void;
+  onDelete: (entry: Snippet) => void;
 }
 
-function ClipboardButton({ entry, appendCommand, onEdit, onDelete }: ClipboardButtonProps) {
-  const [isLoading, setIsLoading] = useState(false);
-  const [showSuccess, setShowSuccess] = useState(false);
+function SnippetRow({ entry, appendCommand, onEdit, onDelete }: SnippetRowProps) {
+  const [isBusy, setIsBusy] = useState(false);
+  const [showCopied, setShowCopied] = useState(false);
 
-  // Reset success state after 3 seconds
+  // Reset the "Copied" state after 2 seconds
   useEffect(() => {
-    if (showSuccess) {
-      const timer = setTimeout(() => {
-        setShowSuccess(false);
-      }, 3000);
+    if (showCopied) {
+      const timer = setTimeout(() => setShowCopied(false), 2000);
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [showSuccess]);
+  }, [showCopied]);
 
-  const copyToClipboard = async () => {
-    if (isLoading || showSuccess) return;
-
-    setIsLoading(true);
+  const handleType = async () => {
+    if (isBusy) return;
+    setIsBusy(true);
     try {
-      const text = appendCommand ? `${entry.command} %command%` : entry.command;
+      await typeText(resolveText(entry, appendCommand));
+    } catch (error) {
+      toaster.toast({
+        title: "Type failed",
+        body: `Error: ${String(error)}`
+      });
+    } finally {
+      setIsBusy(false);
+    }
+  };
 
-      // Use the proven input simulation method for gaming mode
-      const tempInput = document.createElement('input');
-      tempInput.value = text;
-      tempInput.style.position = 'absolute';
-      tempInput.style.left = '-9999px';
-      document.body.appendChild(tempInput);
-
-      // Focus and select the text
-      tempInput.focus();
-      tempInput.select();
-
-      // Try copying using execCommand first (most reliable in gaming mode)
-      let copySuccess = false;
-      try {
-        if (document.execCommand('copy')) {
-          copySuccess = true;
-        }
-      } catch (e) {
-        // If execCommand fails, try navigator.clipboard as fallback
-        try {
-          await navigator.clipboard.writeText(text);
-          copySuccess = true;
-        } catch (clipboardError) {
-          console.error('Both copy methods failed:', e, clipboardError);
-        }
-      }
-
-      // Clean up
-      document.body.removeChild(tempInput);
-
-      if (copySuccess) {
-        setShowSuccess(true);
+  const handleCopy = async () => {
+    if (isBusy || showCopied) return;
+    setIsBusy(true);
+    try {
+      const ok = await copyText(resolveText(entry, appendCommand));
+      if (ok) {
+        setShowCopied(true);
       } else {
         toaster.toast({
-          title: "Copy Failed",
+          title: "Copy failed",
           body: "Unable to copy to clipboard"
         });
       }
     } catch (error) {
       toaster.toast({
-        title: "Copy Failed",
+        title: "Copy failed",
         body: `Error: ${String(error)}`
       });
     } finally {
-      setIsLoading(false);
+      setIsBusy(false);
     }
   };
 
@@ -121,7 +164,7 @@ function ClipboardButton({ entry, appendCommand, onEdit, onDelete }: ClipboardBu
     e.preventDefault();
     e.stopPropagation();
     showContextMenu(
-      <Menu label="Entry Options">
+      <Menu label={entry.name}>
         <MenuItem onSelected={() => onEdit(entry)}>Edit</MenuItem>
         <MenuItem tone="destructive" onSelected={() => onDelete(entry)}>Delete</MenuItem>
       </Menu>,
@@ -129,21 +172,45 @@ function ClipboardButton({ entry, appendCommand, onEdit, onDelete }: ClipboardBu
     );
   };
 
+  const iconButtonStyle = {
+    height: "40px",
+    width: "40px",
+    minWidth: "40px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "10px",
+  };
+
   return (
     <PanelSectionRow>
-      <Focusable
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          width: "100%",
-          padding: "0",
-          marginTop: "8px"
-        }}
-        flow-children="horizontal"
-        onSecondaryActionDescription="Options"
-        onSecondaryButton={(evt) => handleContextMenu(evt as unknown as MouseEvent)}
-      >
+      <div style={{ marginTop: "10px" }}>
+        <div
+          style={{
+            fontSize: "13px",
+            fontWeight: "bold",
+            opacity: 0.9,
+            marginBottom: "4px",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={entry.name}
+        >
+          {truncateName(entry.name, 28)}
+        </div>
+        <Focusable
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            width: "100%",
+            padding: "0",
+          }}
+          flow-children="horizontal"
+          onSecondaryActionDescription="Options"
+          onSecondaryButton={(evt) => handleContextMenu(evt as unknown as MouseEvent)}
+        >
         <DialogButton
           style={{
             height: "40px",
@@ -151,68 +218,63 @@ function ClipboardButton({ entry, appendCommand, onEdit, onDelete }: ClipboardBu
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
+            gap: "8px",
             padding: "10px",
             minWidth: "0",
           }}
-          onClick={copyToClipboard}
-          disabled={isLoading || showSuccess}
+          onClick={handleType}
+          disabled={isBusy}
         >
-          {showSuccess ? (
-            <span style={{ color: "#4CAF50", fontWeight: "bold" }}>
-              <FaCheck style={{ marginRight: "8px" }} />
-              Copied!
-            </span>
-          ) : (
-            <span>{isLoading ? "Copying..." : truncateName(entry.name)}</span>
-          )}
+          <FaKeyboard size={14} />
+          <span>{isBusy ? "Pasting..." : "Paste"}</span>
         </DialogButton>
         <DialogButton
-          style={{
-            height: "40px",
-            width: "40px",
-            minWidth: "40px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "10px",
-          }}
+          style={iconButtonStyle}
+          onClick={handleCopy}
+          disabled={isBusy || showCopied}
+        >
+          {showCopied ? <FaCheck size={16} style={{ color: "#4CAF50" }} /> : <FaClipboard size={16} />}
+        </DialogButton>
+        <DialogButton
+          style={iconButtonStyle}
           onClick={(e) => handleContextMenu(e as unknown as MouseEvent)}
         >
           <FaPencilAlt size={16} />
         </DialogButton>
-      </Focusable>
+        </Focusable>
+      </div>
     </PanelSectionRow>
   );
 }
 
-// Modal component for adding/editing entries
+// Modal component for adding/editing snippets
 interface EntryModalProps {
   closeModal?: () => void;
-  entry?: ClipboardEntry | null;
-  onSave: (name: string, command: string) => void;
+  entry?: Snippet | null;
+  onSave: (name: string, text: string) => void;
 }
 
 function EntryModal({ closeModal, entry, onSave }: EntryModalProps) {
-  const [command, setCommand] = useState(entry?.command || "");
+  const [text, setText] = useState(entry?.text || "");
   const [name, setName] = useState(entry?.name || "");
 
   const handleSave = () => {
-    if (command.trim()) {
-      // If name is empty, use command as the name
-      const finalName = name.trim() || command.trim();
-      onSave(finalName, command.trim());
+    if (text.trim()) {
+      // If name is empty, use the text as the name
+      const finalName = name.trim() || text.trim();
+      onSave(finalName, text.trim());
       closeModal?.();
     } else {
       toaster.toast({
-        title: "Validation Error",
-        body: "Command is required"
+        title: "Nothing to save",
+        body: "Text is required"
       });
     }
   };
 
   return (
     <ConfirmModal
-      strTitle={entry ? "Edit Entry" : "Add Entry"}
+      strTitle={entry ? "Edit Snippet" : "Add Snippet"}
       onOK={handleSave}
       onCancel={closeModal}
       strOKButtonText="Save"
@@ -220,14 +282,14 @@ function EntryModal({ closeModal, entry, onSave }: EntryModalProps) {
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
         <TextField
-          label="Command"
-          description="The command/text to copy (without %command%)"
-          value={command}
-          onChange={(e) => setCommand(e.target.value)}
+          label="Text"
+          description="What gets typed or copied"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
         />
         <TextField
           label="Name (optional)"
-          description="Display name - defaults to command if left blank"
+          description="Button label; defaults to the text"
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
@@ -237,46 +299,55 @@ function EntryModal({ closeModal, entry, onSave }: EntryModalProps) {
 }
 
 function Content() {
-  const [appendCommand, setAppendCommand] = useState(true);
-  const [entries, setEntries] = useState<ClipboardEntry[]>([]);
+  const [appendCommand, setAppendCommand] = useState(false);
+  const [entries, setEntries] = useState<Snippet[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load entries on mount
+  // Load entries and settings on mount
   useEffect(() => {
-    loadEntries();
+    loadAll();
   }, []);
 
-  const loadEntries = async () => {
+  const loadAll = async () => {
     setIsLoading(true);
     try {
-      const loadedEntries = await getEntries();
+      const [loadedEntries, settings] = await Promise.all([getEntries(), getSettings()]);
       setEntries(loadedEntries);
+      setAppendCommand(Boolean(settings.append_command));
     } catch (error) {
-      console.error("Failed to load entries:", error);
+      console.error("Failed to load snippets:", error);
       toaster.toast({
         title: "Error",
-        body: "Failed to load clipboard entries"
+        body: "Failed to load snippets"
       });
     } finally {
       setIsLoading(false);
     }
   };
 
+  const handleToggleAppend = async (checked: boolean) => {
+    setAppendCommand(checked);
+    try {
+      await setSetting("append_command", checked);
+    } catch (error) {
+      toaster.toast({
+        title: "Error",
+        body: "Failed to save setting"
+      });
+    }
+  };
+
   const handleAddEntry = () => {
     showModal(
       <EntryModal
-        onSave={async (name, command) => {
+        onSave={async (name, text) => {
           try {
-            await addEntry(name, command);
-            await loadEntries();
-            toaster.toast({
-              title: "Success",
-              body: "Entry added"
-            });
+            await addEntry(name, text);
+            await loadAll();
           } catch (error) {
             toaster.toast({
               title: "Error",
-              body: "Failed to add entry"
+              body: "Failed to add snippet"
             });
           }
         }}
@@ -284,22 +355,18 @@ function Content() {
     );
   };
 
-  const handleEditEntry = (entry: ClipboardEntry) => {
+  const handleEditEntry = (entry: Snippet) => {
     showModal(
       <EntryModal
         entry={entry}
-        onSave={async (name, command) => {
+        onSave={async (name, text) => {
           try {
-            await updateEntry(entry.id, name, command);
-            await loadEntries();
-            toaster.toast({
-              title: "Success",
-              body: "Entry updated"
-            });
+            await updateEntry(entry.id, name, text);
+            await loadAll();
           } catch (error) {
             toaster.toast({
               title: "Error",
-              body: "Failed to update entry"
+              body: "Failed to update snippet"
             });
           }
         }}
@@ -307,53 +374,22 @@ function Content() {
     );
   };
 
-  const handleDeleteEntry = (entry: ClipboardEntry) => {
+  const handleDeleteEntry = (entry: Snippet) => {
     showModal(
       <ConfirmModal
-        strTitle="Delete Entry"
-        strDescription={`Are you sure you want to delete "${entry.name}"?`}
+        strTitle="Delete Snippet"
+        strDescription={`Delete "${entry.name}"?`}
         strOKButtonText="Delete"
         strCancelButtonText="Cancel"
         bDestructiveWarning={true}
         onOK={async () => {
           try {
             await deleteEntry(entry.id);
-            await loadEntries();
-            toaster.toast({
-              title: "Success",
-              body: "Entry deleted"
-            });
+            await loadAll();
           } catch (error) {
             toaster.toast({
               title: "Error",
-              body: "Failed to delete entry"
-            });
-          }
-        }}
-      />
-    );
-  };
-
-  const handleResetToDefaults = () => {
-    showModal(
-      <ConfirmModal
-        strTitle="Reset to Defaults"
-        strDescription="Are you sure you want to reset all entries to defaults? This will delete all your custom entries."
-        strOKButtonText="Reset"
-        strCancelButtonText="Cancel"
-        bDestructiveWarning={true}
-        onOK={async () => {
-          try {
-            await resetToDefaults();
-            await loadEntries();
-            toaster.toast({
-              title: "Success",
-              body: "Entries reset to defaults"
-            });
-          } catch (error) {
-            toaster.toast({
-              title: "Error",
-              body: "Failed to reset entries"
+              body: "Failed to delete snippet"
             });
           }
         }}
@@ -362,24 +398,21 @@ function Content() {
   };
 
   return (
-    <PanelSection title="Clipboard Commands">
-      <PanelSectionRow>
-        <ToggleField
-          label="Append %command%"
-          description="When enabled, appends %command% to the clipboard entry"
-          checked={appendCommand}
-          onChange={(checked) => setAppendCommand(checked)}
-        />
-      </PanelSectionRow>
-
+    <PanelSection title="Snippets">
       {isLoading ? (
         <PanelSectionRow>
           <div style={{ textAlign: "center", padding: "16px" }}>Loading...</div>
         </PanelSectionRow>
+      ) : entries.length === 0 ? (
+        <PanelSectionRow>
+          <div style={{ textAlign: "center", padding: "16px", opacity: 0.7 }}>
+            No snippets yet. Add one below.
+          </div>
+        </PanelSectionRow>
       ) : (
         <>
           {entries.map((entry) => (
-            <ClipboardButton
+            <SnippetRow
               key={entry.id}
               entry={entry}
               appendCommand={appendCommand}
@@ -397,21 +430,18 @@ function Content() {
         >
           <div style={{ display: "flex", alignItems: "center", gap: "8px", justifyContent: "center" }}>
             <FaPlus />
-            <span>Add Entry</span>
+            <span>Add Snippet</span>
           </div>
         </ButtonItem>
       </PanelSectionRow>
 
       <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={handleResetToDefaults}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", justifyContent: "center", color: "#f44336" }}>
-            <FaUndo />
-            <span>Reset to Defaults</span>
-          </div>
-        </ButtonItem>
+        <ToggleField
+          label="Append %command%"
+          description="For Steam launch options only. Adds ' %command%' to the text. Saved."
+          checked={appendCommand}
+          onChange={handleToggleAppend}
+        />
       </PanelSectionRow>
     </PanelSection>
   );
@@ -425,7 +455,7 @@ export default definePlugin(() => {
     titleView: <div className={staticClasses.Title}>Snippets</div>,
     alwaysRender: true,
     content: <Content />,
-    icon: <FaClipboard />,
+    icon: <FaKeyboard />,
     onDismount() {
       console.log("Snippets plugin unloading");
     },

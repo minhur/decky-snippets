@@ -1,11 +1,17 @@
 {
   "name": "Snippets",
-  "author": "xXJSONDeruloXx",
+  "author": "minhur",
   "flags": [],
   "api_version": 1,
   "publish": {
-    "tags": ["snippets", "utility", "clipboard"],
-    "description": "Save and paste custom launch arguments in Steam Deck game mode.",
-    "image": "https://raw.githubusercontent.com/xXJSONDeruloXx/snippets/refs/heads/main/assets/preview.png"
+    "tags": [
+      "snippets",
+      "utility",
+      "clipboard",
+      "paste",
+      "text"
+    ],
+    "description": "Stored text you can paste with one tap in game mode. Fork of xXJSONDeruloXx/snippets.",
+    "image": "https://raw.githubusercontent.com/minhur/decky-snippets/refs/heads/main/assets/preview.png"
   }
 }
