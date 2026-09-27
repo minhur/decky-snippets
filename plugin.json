@@ -11,7 +11,6 @@
       "paste",
       "text"
     ],
-    "description": "Stored text you can paste with one tap in game mode. Fork of xXJSONDeruloXx/snippets.",
-    "image": "https://raw.githubusercontent.com/minhur/decky-snippets/refs/heads/main/assets/preview.png"
+    "description": "Stored text: tap an entry to paste it into the focused field. Fork of xXJSONDeruloXx/snippets."
   }
 }

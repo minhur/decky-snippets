@@ -1,30 +1,17 @@
-# Snippets backend: stores snippets and settings as JSON in the plugin's
-# Decky settings directory. No binaries, no network.
+# Snippets backend: stores snippets as JSON in the plugin's Decky settings
+# directory. No binaries, no network.
 import decky
 import os
 import json
 
 ENTRIES_FILE = "clipboard_entries.json"  # kept from upstream so existing data loads
-SETTINGS_FILE = "settings.json"
-
-DEFAULT_SETTINGS = {
-    "append_command": False,
-}
 
 
 class Plugin:
     entries = []
-    settings = dict(DEFAULT_SETTINGS)
-
-    # ---- paths -----------------------------------------------------------
 
     def _entries_path(self):
         return os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, ENTRIES_FILE)
-
-    def _settings_path(self):
-        return os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, SETTINGS_FILE)
-
-    # ---- entries ---------------------------------------------------------
 
     def _load_entries(self):
         path = self._entries_path()
@@ -85,45 +72,9 @@ class Plugin:
         self._save_entries()
         return True
 
-    # ---- settings --------------------------------------------------------
-
-    def _load_settings(self):
-        self.settings = dict(DEFAULT_SETTINGS)
-        path = self._settings_path()
-        if not os.path.exists(path):
-            return
-        try:
-            with open(path, "r") as f:
-                stored = json.load(f)
-            if isinstance(stored, dict):
-                self.settings.update({k: v for k, v in stored.items() if k in DEFAULT_SETTINGS})
-        except Exception as e:
-            decky.logger.error(f"Failed to load settings: {e}")
-
-    def _save_settings(self):
-        try:
-            with open(self._settings_path(), "w") as f:
-                json.dump(self.settings, f, indent=2)
-        except Exception as e:
-            decky.logger.error(f"Failed to save settings: {e}")
-
-    async def get_settings(self):
-        return self.settings
-
-    async def set_setting(self, key: str, value):
-        if key not in DEFAULT_SETTINGS:
-            decky.logger.warning(f"Ignoring unknown setting: {key}")
-            return self.settings
-        self.settings[key] = value
-        self._save_settings()
-        return self.settings
-
-    # ---- lifecycle -------------------------------------------------------
-
     async def _main(self):
         decky.logger.info("Snippets plugin loaded")
         self._load_entries()
-        self._load_settings()
 
     async def _unload(self):
         decky.logger.info("Snippets plugin unloaded")

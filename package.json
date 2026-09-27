@@ -1,7 +1,7 @@
 {
   "name": "snippets",
-  "version": "1.1.0",
-  "description": "Stored text snippets for Steam Deck game mode: one tap pastes (types) the text into the focused field, or copies it for the on-screen keyboard's paste key.",
+  "version": "1.2.0",
+  "description": "Stored text for Steam Deck game mode: tap an entry and it is pasted (typed) into the focused text field.",
   "type": "module",
   "scripts": {
     "build": "rollup -c",
